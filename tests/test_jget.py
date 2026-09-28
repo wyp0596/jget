@@ -432,9 +432,10 @@ class InstallTest(unittest.TestCase):
     def test_install_and_uninstall_roundtrip(self):
         with tempfile.TemporaryDirectory() as home:
             bin_dir = os.path.join(home, "bin")
+            # expanduser reads HOME (POSIX) / USERPROFILE (Windows); point both at the temp home.
             env = {"HOME": home, "USERPROFILE": home, "CLAUDE_CONFIG_DIR": os.path.join(home, ".claude")}
-            with mock.patch.dict(os.environ, env), mock.patch.object(jget.os.path, "expanduser",
-                                                                         lambda p: p.replace("~", home, 1)):
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(os.path.expanduser("~"), home)
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     jget.install(["--bin-dir", bin_dir, "--cursor"])
