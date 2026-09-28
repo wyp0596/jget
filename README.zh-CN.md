@@ -88,7 +88,7 @@ PR 已提交，等待 CI。
 # 1. 安装（同时装好 Cursor / Claude skill）
 curl -fsSL https://raw.githubusercontent.com/wyp0596/jget/main/install.sh | sh
 
-# 2. 配置（以 Jira Cloud 为例）
+# 2. 配置（以 Jira Cloud 为例，先按下面步骤拿到 Token）
 export JIRA_URL=https://your-domain.atlassian.net
 export JIRA_USER=you@example.com
 export JIRA_TOKEN=<api-token>
@@ -96,6 +96,25 @@ export JIRA_TOKEN=<api-token>
 # 3. 使用
 jget PROJ-123
 ```
+
+### API Token 去哪里申请
+
+**Jira Cloud**（一般是 `*.atlassian.net`）：
+
+1. 打开 [Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. 用登录 Jira 的同一个 Atlassian 账号登录
+3. 点 **Create API token**，填个名字，创建后立刻复制（只显示一次）
+4. `JIRA_USER` 填你的**登录邮箱**，`JIRA_TOKEN` 填刚复制的 token
+
+**Jira Server / Data Center**（公司自建）：
+
+1. 浏览器登录你们的 Jira
+2. 点右上角头像 → **Profile（个人资料）** → **Personal Access Tokens**  
+   （不同版本菜单文案可能略有差异，在个人设置里搜 “Personal Access Tokens”）
+3. 创建 token 并复制
+4. 设置 `JIRA_AUTH=bearer`，把 token 放进 `JIRA_TOKEN`（不需要 `JIRA_USER`）
+
+> 能用 Token / PAT 就别用账号密码。Token 可以单独吊销，不用改登录密码。
 
 ## 📦 安装
 
@@ -176,7 +195,7 @@ python3 jget.py install      # Windows: py jget.py install
 
 ### ☁️ Jira Cloud（默认）
 
-邮箱 + API Token。申请地址：<https://id.atlassian.com/manage-profile/security/api-tokens>
+邮箱 + [API Token](https://id.atlassian.com/manage-profile/security/api-tokens)（步骤见 [API Token 去哪里申请](#api-token-去哪里申请)）。
 
 ```bash
 export JIRA_URL=https://your-domain.atlassian.net
@@ -186,7 +205,7 @@ export JIRA_TOKEN=<api-token>
 
 ### 🏢 Jira Server / Data Center — Personal Access Token
 
-Jira 8.14+ 的 PAT 用 Bearer 发送。在 **个人资料 → Personal Access Tokens** 创建。不需要 `JIRA_USER`。
+Jira 8.14+ 的 PAT 用 Bearer 发送。在 **个人资料 → Personal Access Tokens** 创建（步骤见 [API Token 去哪里申请](#api-token-去哪里申请)）。不需要 `JIRA_USER`。
 
 ```bash
 export JIRA_URL=https://jira.company.com

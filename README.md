@@ -69,7 +69,7 @@ PR is up, waiting for CI.
 # 1. Install
 curl -fsSL https://raw.githubusercontent.com/wyp0596/jget/main/install.sh | sh
 
-# 2. Configure (Jira Cloud)
+# 2. Configure (Jira Cloud) — get a token first (see below)
 export JIRA_URL=https://your-domain.atlassian.net
 export JIRA_USER=you@example.com
 export JIRA_TOKEN=<api-token>
@@ -77,6 +77,25 @@ export JIRA_TOKEN=<api-token>
 # 3. Go
 jget PROJ-123
 ```
+
+### Where to get an API token
+
+**Jira Cloud** (most `*.atlassian.net` sites):
+
+1. Open [Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Sign in with the same Atlassian account you use for Jira
+3. Click **Create API token**, give it a label, copy the token (shown once)
+4. Use your login **email** as `JIRA_USER` and that token as `JIRA_TOKEN`
+
+**Jira Server / Data Center** (self-hosted):
+
+1. Log in to your Jira in the browser
+2. Open your avatar → **Profile** → **Personal Access Tokens**  
+   (path may vary slightly by version; search the page for “Personal Access Tokens”)
+3. Create a token, copy it
+4. Set `JIRA_AUTH=bearer` and put the token in `JIRA_TOKEN` (`JIRA_USER` not needed)
+
+> Prefer a token over your account password. Tokens can be revoked without changing your password.
 
 ## 📦 Install
 
@@ -158,7 +177,7 @@ python3 jget.py install      # Windows: py jget.py install
 
 ### ☁️ Jira Cloud (default)
 
-Basic auth with your email and an API token. Create a token at <https://id.atlassian.com/manage-profile/security/api-tokens>.
+Basic auth with your email and an [API token](https://id.atlassian.com/manage-profile/security/api-tokens) (see [Where to get an API token](#where-to-get-an-api-token)).
 
 ```bash
 export JIRA_URL=https://your-domain.atlassian.net
@@ -168,7 +187,7 @@ export JIRA_TOKEN=<api-token>
 
 ### 🏢 Jira Server / Data Center — Personal Access Token
 
-Personal Access Tokens (Jira 8.14+) are sent as a Bearer token. Create one in Jira under **Profile → Personal Access Tokens**. `JIRA_USER` is not needed.
+Personal Access Tokens (Jira 8.14+) are sent as a Bearer token. Create one under **Profile → Personal Access Tokens** (see [Where to get an API token](#where-to-get-an-api-token)). `JIRA_USER` is not needed.
 
 ```bash
 export JIRA_URL=https://jira.company.com
