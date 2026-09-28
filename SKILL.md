@@ -6,11 +6,13 @@ description: Fetch a Jira ticket via the `jget` CLI (summary, status, assignee, 
 # jget
 
 ```bash
-jget <ISSUE-KEY> --plain -n -1
+jget <ISSUE-KEY|URL> --plain -n -1
 jget <ISSUE-KEY> --plain -n 0 -d <tmp>/<ISSUE-KEY>   # then open images if needed
 ```
 
-Always use `--plain`. From a browse URL, the key is the last path segment (e.g. `PROJ-123`).
+Always use `--plain`. A pasted Jira URL works as-is (quote it). Output includes type, status,
+priority, people, labels, parent, subtasks and linked issues; run `jget <KEY>` on a parent or
+linked key when you need that context. Mentions are already resolved to `@Name`.
 
 ## Setup (only if env missing)
 

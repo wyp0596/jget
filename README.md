@@ -6,6 +6,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/wyp0596/jget/actions/workflows/ci.yml/badge.svg)](https://github.com/wyp0596/jget/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/wyp0596/jget?color=blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](jget.py)
@@ -25,14 +26,27 @@ $ jget PROJ-123 -n 2
 ================================================================================
 [PROJ-123] Fix JWT validation error on the login page
 ================================================================================
+Type:     Bug
 Status:   In Progress
+Priority: High
 Assignee: Alex Mercer
+Reporter: Zhang San
+Labels:   auth, web
+Created:  2026-03-19 10:02
+Updated:  2026-03-21 09:15
+Parent:   [PROJ-100] Login hardening (In Progress)
+
+--------------------------------------------------------------------------------
+[ Linked issues (1) ]
+--------------------------------------------------------------------------------
+  is blocked by [PROJ-98] Upgrade jwt library (Done)
 
 --------------------------------------------------------------------------------
 [ Description ]
 --------------------------------------------------------------------------------
 After being idle for a long time, submitting the form returns a 500 error.
 Check the JWT expiry logic and return a proper 401 instead.
+Repro steps (https://wiki.example.com/jwt-500)
 
 [image: login-error.png]
 
@@ -46,7 +60,7 @@ Check the JWT expiry logic and return a proper 401 instead.
 [ Comments (latest 2 of 5) ]
 --------------------------------------------------------------------------------
 [1] Zhang San (2026-03-20 14:30)
-Reproduced. The frontend needs to refresh the token silently.
+@Alex Mercer reproduced. The frontend needs to refresh the token silently.
 
 [2] Li Si (2026-03-21 09:15)
 PR is up, waiting for CI.
@@ -54,12 +68,14 @@ PR is up, waiting for CI.
 
 ## ✨ Features
 
-- 📝 **Everything that matters** — summary, status, assignee, description, comments and attachments in one screen
+- 📝 **Everything that matters** — summary, type, status, priority, people, labels, parent, subtasks, linked issues, description, comments and attachments in one screen
 - 💬 **Latest comments first** — show the newest N comments with `-n`, or all of them with `-n -1`
-- 🖼️ **Readable embeds** — Jira markup like `!shot.png|width=300!` becomes `[image: shot.png]`
+- 🧹 **Readable for humans and agents** — `[~accountid:…]` mentions become `@Name`, `{color}` noise is dropped, `[text|url|smart-link]` becomes `text (url)`, `!shot.png|width=300!` becomes `[image: shot.png]`
+- 🔗 **Paste a URL** — `jget https://your-domain.atlassian.net/browse/PROJ-123` works, board links with `?selectedIssue=` too
 - 📎 **Attachment download** — grab every screenshot, video and file with `-d <dir>`
-- 🧰 **Script friendly** — raw JSON with `--json`, colors off automatically when piped
+- 🧰 **Script friendly** — full JSON (all comments) with `--json`, colors off automatically when piped
 - 🔐 **Every Jira flavor** — Jira Cloud API tokens, Server / Data Center Personal Access Tokens, or username + password
+- 🛡️ **Future-proof** — falls back to REST API v3 and renders Atlassian Document Format when Cloud retires a v2 endpoint
 - 🤖 **AI agent skill** — one command teaches Claude Code and Cursor to read your tickets
 - 🪶 **Zero dependencies** — a single Python file using only the standard library
 
@@ -174,6 +190,7 @@ python3 jget.py install      # Windows: py jget.py install
 | `JIRA_USER` | with `basic` auth | Login email (Jira Cloud) or username (Server / Data Center) |
 | `JIRA_PASSWORD` | — | Account password (Server / Data Center), used only when `JIRA_TOKEN` is empty |
 | `JIRA_AUTH` | — | `basic` (default) or `bearer` |
+| `JIRA_API` | — | REST API version, `2` (default) or `3` (Jira Cloud only). jget switches to v3 by itself when Cloud answers `410 Gone` for v2 |
 
 ### ☁️ Jira Cloud (default)
 
@@ -214,23 +231,48 @@ export JIRA_PASSWORD='<password>'
 ## 💻 Usage
 
 ```bash
-jget <ISSUE-KEY> [flags]
+jget <ISSUE-KEY|URL> [flags]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-n <int>` | Number of latest comments to show (default `5`, `-1` = all, `0` = none) |
 | `-d <dir>` | Download all attachments into `<dir>` |
-| `--json` | Print the raw JSON response |
+| `--json` | Print the raw issue JSON, with **all** comments (not just the first page) |
 | `--plain` | Disable ANSI colors |
+| `--version` | Print the version |
 
 ```bash
-jget PROJ-123                         # latest 5 comments
-jget PROJ-123 -n -1                   # all comments
-jget PROJ-123 -n 0 -d ./PROJ-123      # download screenshots and other attachments
+jget PROJ-123                                            # latest 5 comments
+jget https://your-domain.atlassian.net/browse/PROJ-123   # a pasted link works too
+jget PROJ-123 -n -1                                      # all comments
+jget PROJ-123 -n 0 -d ./PROJ-123                         # download screenshots and other attachments
 jget PROJ-123 --json | jq -r '.fields.status.name'
 jget PROJ-123 --plain > PROJ-123.txt
 ```
+
+When you pass a URL and `JIRA_URL` is not set, the base URL is taken from the link (including a context path such as `https://company.com/jira`).
+
+<details>
+<summary><b>What gets cleaned up</b></summary>
+
+<br>
+
+Jira wiki markup (REST API v2) and Atlassian Document Format (REST API v3) are both rendered as plain, agent-friendly text:
+
+| Jira | jget |
+|------|------|
+| `[~accountid:5b10ac8d…]` | `@Alex Mercer` (resolved via the issue's own users, then `/user/bulk`) |
+| `[~jdoe]` (Server / DC) | `@jdoe` |
+| `{color:#4c9aff}text{color}` | `text` |
+| `[https://a.io/x\|https://a.io/x\|smart-link]` | `https://a.io/x` |
+| `[the docs\|https://a.io/docs]` | `the docs (https://a.io/docs)` |
+| `!shot.png\|width=300!`, `[^report.xlsx]` | `[image: shot.png]`, `[file: report.xlsx]` |
+| ADF lists / tables / code / mentions | wiki-style `*`, `\|\|`, `{code}`, `@Name` |
+
+Use `--json` when you need the untouched original.
+
+</details>
 
 ## 🤖 Use with AI agents
 
@@ -262,7 +304,18 @@ Removes the executable and the skill from Claude Code and Cursor. Accepts the sa
 | `authentication blocked by CAPTCHA` | Log in to Jira once in the browser, then retry |
 | `issue not found or not visible to you (HTTP 404)` | Check the issue key and your permissions |
 | `request timed out after 10s` | Check your network / VPN and `JIRA_URL` |
+| `not an issue key or Jira issue URL` | Pass `PROJ-123` or a link containing the key, e.g. `…/browse/PROJ-123` |
 | `JIRA_AUTH must be one of` | Use `basic` or `bearer` |
+| `request failed (HTTP 410)` | That REST endpoint was retired by Atlassian. jget falls back to v3 for the issue itself; if you still see this, set `JIRA_API=3` |
+
+## 🛠️ Development
+
+```bash
+git clone https://github.com/wyp0596/jget.git && cd jget
+python3 -m unittest discover -s tests -v   # no test dependencies either
+```
+
+CI runs the suite on Python 3.8 / 3.12 / 3.13 across Linux, macOS and Windows.
 
 ## 📄 License
 

@@ -14,15 +14,26 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
+
+__version__ = "1.1.0"
 
 LINE_WIDTH = 80
 TIMEOUT = 10
 PAGE_SIZE = 100
-USER_AGENT = "jget/1.0"
+USER_LOOKUP_CHUNK = 50
+USER_AGENT = f"jget/{__version__}"
 IS_WINDOWS = os.name == "nt"
+ISSUE_FIELDS = ("summary,status,assignee,reporter,issuetype,priority,labels,components,fixVersions,"
+                "created,updated,parent,subtasks,issuelinks,description,comment,attachment")
 
+ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
 EMBED_RE = re.compile(r"!([^!|\s][^!|\n]*\.([A-Za-z0-9]{2,5}))(\|[^!\n]*)?!")
+# Jira wiki markup that is noise (or unreadable) in a terminal / for an AI agent.
+COLOR_RE = re.compile(r"\{color(?::[^}]*)?\}")
+MENTION_RE = re.compile(r"\[~(accountid:)?([^\]\s]+)\]")
+ATTACH_REF_RE = re.compile(r"\[\^([^\]|]+)(?:\|[^\]]*)?\]")
+LINK_RE = re.compile(r"\[(?:([^\]|]*)\|)?((?:https?://|mailto:|/|#)[^\]|\s]+)(?:\|[^\]]*)?\]")
 MEDIA_KINDS = {
     **dict.fromkeys(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic"], "image"),
     **dict.fromkeys(["mp4", "mov", "webm", "avi", "mkv", "m4v"], "video"),
@@ -32,7 +43,9 @@ WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10
 
 
 class JiraError(Exception):
-    pass
+    def __init__(self, msg, code=None):
+        super().__init__(msg)
+        self.code = code
 
 
 def fail(msg):
@@ -110,10 +123,14 @@ AUTH_TYPES = ("basic", "bearer")
 
 
 class Client:
-    def __init__(self, base_url, user, secret, auth_type="basic", secret_var="JIRA_TOKEN"):
+    def __init__(self, base_url, user, secret, auth_type="basic", secret_var="JIRA_TOKEN", api="2"):
         self.base_url = base_url.rstrip("/")
         self.auth_type = auth_type
         self.secret_var = secret_var
+        # REST API version. v2 returns wiki markup text; v3 (Cloud only) returns ADF JSON,
+        # which we render ourselves. Cloud is retiring v2 endpoints one by one (HTTP 410),
+        # so get_issue() falls back to v3 automatically.
+        self.api = api
         if auth_type == "bearer":
             self.auth = f"Bearer {secret}"
         else:
@@ -148,8 +165,8 @@ class Client:
             if e.code in (401, 403):
                 raise self._auth_error(e)
             if e.code == 404:
-                raise JiraError("issue not found or not visible to you (HTTP 404)")
-            raise JiraError(f"request failed (HTTP {e.code}): {jira_error_message(e.read())}")
+                raise JiraError("issue not found or not visible to you (HTTP 404)", 404)
+            raise JiraError(f"request failed (HTTP {e.code}): {jira_error_message(e.read())}", e.code)
         except urllib.error.URLError as e:
             if isinstance(e.reason, (socket.timeout, TimeoutError)):
                 raise self._timeout_error()
@@ -178,10 +195,23 @@ class Client:
         except ValueError as e:
             raise JiraError(f"invalid JSON response: {e}")
 
+    def api_path(self, path):
+        return f"/rest/api/{self.api}{path}"
+
+    def get_issue(self, key, fields=ISSUE_FIELDS):
+        path = f"/issue/{urllib.parse.quote(key, safe='')}"
+        try:
+            return self.get_json(self.api_path(path), {"fields": fields})
+        except JiraError as e:
+            if e.code != 410 or self.api != "2":
+                raise
+            self.api = "3"
+            return self.get_json(self.api_path(path), {"fields": fields})
+
     def fetch_comments(self, key, start_at, total):
         """Page through the comment endpoint from start_at up to total."""
         out = []
-        path = f"/rest/api/2/issue/{urllib.parse.quote(key, safe='')}/comment"
+        path = self.api_path(f"/issue/{urllib.parse.quote(key, safe='')}/comment")
         while start_at < total:
             page = self.get_json(path, {"startAt": start_at, "maxResults": PAGE_SIZE})
             comments = page.get("comments") or []
@@ -190,6 +220,22 @@ class Client:
             out.extend(comments)
             start_at += len(comments)
         return out
+
+    def lookup_users(self, account_ids):
+        """Resolve Jira Cloud account IDs to display names. Best effort: unknown IDs are skipped."""
+        names = {}
+        ids = sorted(set(account_ids))
+        for i in range(0, len(ids), USER_LOOKUP_CHUNK):
+            chunk = ids[i:i + USER_LOOKUP_CHUNK]
+            query = urllib.parse.urlencode([("accountId", a) for a in chunk] + [("maxResults", len(chunk))])
+            try:
+                data = self.get_json(self.api_path("/user/bulk") + "?" + query)
+            except JiraError:
+                continue
+            for u in data.get("values") or []:
+                if u.get("accountId") and u.get("displayName"):
+                    names[u["accountId"]] = u["displayName"]
+        return names
 
     def download(self, url, dest):
         with self.open(url) as resp:
@@ -272,32 +318,247 @@ def user_name(u):
     return u.get("displayName") or u.get("name") or ""
 
 
-def replace_embeds(s, p):
-    def sub(m):
-        kind = MEDIA_KINDS.get(m.group(2).lower(), "file")
-        return p.cyan(f"[{kind}: {m.group(1).strip()}]")
-
-    return EMBED_RE.sub(sub, s)
+def media_tag(name):
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return f"[{MEDIA_KINDS.get(ext, 'file')}: {name.strip()}]"
 
 
-def render(issue, comments, total, n, p):
+def parse_issue_arg(arg):
+    """Accept an issue key or a Jira URL. Returns (KEY, base_url_or_None); (None, None) if unrecognised."""
+    arg = arg.strip()
+    if ISSUE_KEY_RE.match(arg):
+        return arg.upper(), None
+    parts = urllib.parse.urlsplit(arg)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None, None
+    segments = [s for s in parts.path.split("/") if s]
+    key = next(iter(urllib.parse.parse_qs(parts.query).get("selectedIssue") or []), None)
+    if not key:
+        key = next((s for s in reversed(segments) if ISSUE_KEY_RE.match(s)), None)
+    if not key or not ISSUE_KEY_RE.match(key):
+        return None, None
+    base = f"{parts.scheme}://{parts.netloc}"
+    if "browse" in segments:  # keep a context path such as https://company.com/jira
+        base += "".join("/" + s for s in segments[:segments.index("browse")])
+    return key.upper(), base
+
+
+def find_account_ids(texts):
+    ids = set()
+    for s in texts:
+        if isinstance(s, str):
+            ids.update(m.group(2) for m in MENTION_RE.finditer(s) if m.group(1))
+    return ids
+
+
+def known_users(issue, comments):
+    """accountId -> displayName for users already present in the issue payload (no extra requests)."""
+    f = issue.get("fields") or {}
+    users = [f.get("assignee"), f.get("reporter")]
+    for c in comments:
+        users += [c.get("author"), c.get("updateAuthor")]
+    return {u["accountId"]: u["displayName"] for u in users if u and u.get("accountId") and u.get("displayName")}
+
+
+def clean_markup(s, p, names=None):
+    """Make Jira wiki markup readable: drop {color}, flatten links, name @mentions, tag embeds."""
+    names = names or {}
+
+    def mention(m):
+        if m.group(1):
+            who = names.get(m.group(2)) or f"user:{m.group(2)}"
+        else:
+            who = m.group(2)
+        return p.cyan(f"@{who}")
+
+    def link(m):
+        text, url = (m.group(1) or "").strip(), m.group(2)
+        return url if not text or text == url else f"{text} ({url})"
+
+    s = COLOR_RE.sub("", s)
+    s = ATTACH_REF_RE.sub(lambda m: p.cyan(media_tag(m.group(1))), s)
+    s = EMBED_RE.sub(lambda m: p.cyan(media_tag(m.group(1))), s)
+    s = LINK_RE.sub(link, s)
+    s = MENTION_RE.sub(mention, s)
+    return s
+
+
+# --- Atlassian Document Format (Jira Cloud REST v3) -> wiki-flavoured plain text -----------------
+
+def adf_to_text(node):
+    return _adf(node, 0).strip("\n")
+
+
+def _adf_inline(nodes, depth):
+    return "".join(_adf(n, depth) for n in nodes or [])
+
+
+def _adf_blocks(nodes, depth, sep="\n\n"):
+    return sep.join(t for t in (_adf(n, depth) for n in nodes or []) if t.strip())
+
+
+def _adf_list(node, depth):
+    marker = "*" if node.get("type") == "bulletList" else "#"
+    items = []
+    for item in node.get("content") or []:
+        parts = []
+        for child in item.get("content") or []:
+            if child.get("type") in ("bulletList", "orderedList"):
+                parts.append(_adf_list(child, depth + 1))
+            else:
+                text = _adf(child, depth)
+                if text.strip():
+                    parts.append(f"{marker * (depth + 1)} {text}")
+        items.append("\n".join(parts))
+    return "\n".join(items)
+
+
+def _adf_table(node, depth):
+    rows = []
+    for row in node.get("content") or []:
+        cells = row.get("content") or []
+        sep = "||" if cells and all(c.get("type") == "tableHeader" for c in cells) else "|"
+        texts = [" ".join(_adf_blocks(c.get("content"), depth, "\n").split("\n")).strip() or " " for c in cells]
+        rows.append(sep + sep.join(texts) + sep)
+    return "\n".join(rows)
+
+
+def _adf(node, depth):
+    if not isinstance(node, dict):
+        return ""
+    t, attrs, content = node.get("type"), node.get("attrs") or {}, node.get("content")
+    if t == "text":
+        s = node.get("text") or ""
+        for m in node.get("marks") or []:
+            kind = m.get("type")
+            if kind == "strong":
+                s = f"*{s}*"
+            elif kind == "em":
+                s = f"_{s}_"
+            elif kind == "strike":
+                s = f"-{s}-"
+            elif kind == "code":
+                s = f"{{{{{s}}}}}"
+            elif kind == "link":
+                href = (m.get("attrs") or {}).get("href") or ""
+                if href and href != s:
+                    s = f"{s} ({href})"
+        return s
+    if t == "hardBreak":
+        return "\n"
+    if t == "mention":
+        return attrs.get("text") or f"@user:{attrs.get('id', '')}"
+    if t == "emoji":
+        return attrs.get("text") or attrs.get("shortName") or ""
+    if t in ("inlineCard", "blockCard", "embedCard"):
+        return attrs.get("url") or ""
+    if t == "status":
+        return f"[{attrs.get('text') or ''}]"
+    if t == "date":
+        try:
+            return datetime.fromtimestamp(int(attrs.get("timestamp")) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OSError, OverflowError):
+            return ""
+    if t in ("media", "mediaInline"):
+        return media_tag(attrs.get("alt") or attrs.get("id") or "media")
+    if t == "paragraph":
+        return _adf_inline(content, depth)
+    if t == "heading":
+        return f"h{attrs.get('level') or 1}. {_adf_inline(content, depth)}"
+    if t == "codeBlock":
+        lang = attrs.get("language")
+        return f"{{code{':' + lang if lang else ''}}}\n{_adf_inline(content, depth)}\n{{code}}"
+    if t == "blockquote":
+        return f"{{quote}}\n{_adf_blocks(content, depth)}\n{{quote}}"
+    if t == "rule":
+        return "----"
+    if t in ("bulletList", "orderedList"):
+        return _adf_list(node, depth)
+    if t == "taskList":
+        return "\n".join(
+            f"[{'x' if (i.get('attrs') or {}).get('state') == 'DONE' else ' '}] {_adf_inline(i.get('content'), depth)}"
+            for i in content or [])
+    if t == "decisionList":
+        return "\n".join(f"<> {_adf_inline(i.get('content'), depth)}" for i in content or [])
+    if t == "table":
+        return _adf_table(node, depth)
+    if t in ("expand", "nestedExpand"):
+        title = attrs.get("title")
+        body = _adf_blocks(content, depth)
+        return f"*{title}*\n{body}" if title else body
+    if t == "panel":
+        kind = attrs.get("panelType")
+        body = _adf_blocks(content, depth)
+        return f"({kind}) {body}" if kind and kind != "info" else body
+    # doc, mediaSingle, mediaGroup, layoutSection, layoutColumn, bodiedExtension, listItem, ...
+    return _adf_blocks(content, depth)
+
+
+def body_text(value, p, names=None):
+    """Render a description/comment body, which is wiki text (API v2) or ADF (API v3)."""
+    if isinstance(value, dict):
+        return adf_to_text(value)
+    return clean_markup((value or "").strip(), p, names)
+
+
+def issue_ref(i, p):
+    f = i.get("fields") or {}
+    s = f"{p.yellow('[' + (i.get('key') or '') + ']')} {f.get('summary') or ''}".rstrip()
+    status = (f.get("status") or {}).get("name")
+    return f"{s} {p.dim('(' + status + ')')}" if status else s
+
+
+def names_of(items):
+    return ", ".join(x.get("name") for x in items or [] if x.get("name"))
+
+
+def render(issue, comments, total, n, p, names=None):
     heavy = p.dim("=" * LINE_WIDTH)
     light = p.dim("-" * LINE_WIDTH)
     f = issue.get("fields") or {}
     status = (f.get("status") or {}).get("name") or "Unknown"
-    assignee = user_name(f.get("assignee")) or "Unassigned"
     out = []
 
     def section(title):
         out.extend(["", light, p.bold(f"[ {title} ]"), light])
 
     out += [heavy, f"{p.yellow('[' + issue['key'] + ']')} {p.bold(f.get('summary') or '')}", heavy]
-    out.append(f"{p.bold('Status:')}   {p.green(status)}")
-    out.append(f"{p.bold('Assignee:')} {assignee}")
+    rows = [
+        ("Type", (f.get("issuetype") or {}).get("name")),
+        ("Status", p.green(status)),
+        ("Priority", (f.get("priority") or {}).get("name")),
+        ("Assignee", user_name(f.get("assignee")) or "Unassigned"),
+        ("Reporter", user_name(f.get("reporter"))),
+        ("Labels", ", ".join(f.get("labels") or [])),
+        ("Components", names_of(f.get("components"))),
+        ("Fix Version", names_of(f.get("fixVersions"))),
+        ("Created", format_time(f.get("created"))),
+        ("Updated", format_time(f.get("updated"))),
+        ("Parent", issue_ref(f["parent"], p) if f.get("parent") else ""),
+    ]
+    rows = [(k, v) for k, v in rows if v]
+    width = max(len(k) for k, _ in rows) + 1
+    for k, v in rows:
+        out.append(f"{p.bold((k + ':').ljust(width))} {v}")
+
+    subtasks = f.get("subtasks") or []
+    if subtasks:
+        section(f"Subtasks ({len(subtasks)})")
+        out += [f"  {issue_ref(s, p)}" for s in subtasks]
+
+    links = f.get("issuelinks") or []
+    if links:
+        section(f"Linked issues ({len(links)})")
+        for link in links:
+            kind = link.get("type") or {}
+            if link.get("outwardIssue"):
+                out.append(f"  {kind.get('outward') or 'links to'} {issue_ref(link['outwardIssue'], p)}")
+            elif link.get("inwardIssue"):
+                out.append(f"  {kind.get('inward') or 'linked from'} {issue_ref(link['inwardIssue'], p)}")
 
     section("Description")
-    desc = (f.get("description") or "").strip()
-    out.append(replace_embeds(desc, p) if desc else p.dim("(no description)"))
+    desc = body_text(f.get("description"), p, names)
+    out.append(desc if desc else p.dim("(no description)"))
 
     attachments = f.get("attachment") or []
     if attachments:
@@ -318,7 +579,7 @@ def render(issue, comments, total, n, p):
                 out.append("")
             author = user_name(c.get("author")) or "Anonymous"
             out.append(f"{p.yellow(f'[{i}]')} {p.cyan(author)} {p.dim('(' + format_time(c.get('created')) + ')')}")
-            out.append(replace_embeds((c.get("body") or "").strip(), p))
+            out.append(body_text(c.get("body"), p, names))
 
     print("\n".join(out))
 
@@ -326,7 +587,7 @@ def render(issue, comments, total, n, p):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="jget",
-        usage="jget <ISSUE-KEY> [flags]\n       jget install|uninstall [--claude] [--cursor] [--bin-dir DIR]",
+        usage="jget <ISSUE-KEY|URL> [flags]\n       jget install|uninstall [--claude] [--cursor] [--bin-dir DIR]",
         description="Show a Jira ticket's description and comments.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -339,16 +600,21 @@ def parse_args(argv):
             "  JIRA_USER      login email or username (not needed with JIRA_AUTH=bearer)\n"
             "  JIRA_TOKEN     API token (Cloud) or Personal Access Token (Server/DC)\n"
             "  JIRA_PASSWORD  account password (Server/DC), used when JIRA_TOKEN is not set\n"
-            "  JIRA_AUTH      basic (default, Jira Cloud) or bearer (Server/DC Personal Access Token)"
+            "  JIRA_AUTH      basic (default, Jira Cloud) or bearer (Server/DC Personal Access Token)\n"
+            "  JIRA_API       REST API version, 2 (default) or 3 (Cloud only; used automatically\n"
+            "                 when v2 is retired)"
         ),
     )
-    parser.add_argument("key", metavar="ISSUE-KEY", help="issue key, e.g. PROJ-123")
+    parser.add_argument("key", metavar="ISSUE-KEY|URL",
+                        help="issue key (PROJ-123) or a Jira issue URL (https://.../browse/PROJ-123)")
     parser.add_argument("-n", type=int, default=5, metavar="<int>",
                         help="number of latest comments to show (default 5, -1 = all, 0 = none)")
     parser.add_argument("-d", metavar="<dir>", dest="dir",
                         help="download all attachments (images, videos, files) into <dir>")
-    parser.add_argument("--json", action="store_true", help="print raw JSON (for piping into jq)")
+    parser.add_argument("--json", action="store_true",
+                        help="print the raw issue JSON with all comments (for piping into jq)")
     parser.add_argument("--plain", action="store_true", help="disable ANSI colors")
+    parser.add_argument("--version", action="version", version=f"jget {__version__}")
     args = parser.parse_args(argv)
     if args.n < -1:
         parser.error("-n must be >= -1")
@@ -607,12 +873,22 @@ def main():
         return
 
     args = parse_args(argv)
-    key = args.key.strip()
+    key, url_base = parse_issue_arg(args.key)
+    if not key:
+        fail(f"not an issue key or Jira issue URL: {args.key}")
 
     auth_type = os.environ.get("JIRA_AUTH", "").strip().lower() or "basic"
     if auth_type not in AUTH_TYPES:
         fail(f"JIRA_AUTH must be one of: {', '.join(AUTH_TYPES)} (got: {auth_type})")
+    api = os.environ.get("JIRA_API", "").strip() or "2"
+    if api not in ("2", "3"):
+        fail(f"JIRA_API must be 2 or 3 (got: {api})")
     env = {k: os.environ.get(k, "").strip() for k in ("JIRA_URL", "JIRA_USER", "JIRA_TOKEN")}
+    if url_base:
+        if not env["JIRA_URL"]:
+            env["JIRA_URL"] = url_base
+        elif urllib.parse.urlsplit(url_base).netloc.lower() != urllib.parse.urlsplit(env["JIRA_URL"]).netloc.lower():
+            print(f"jget: warning: URL host differs from JIRA_URL, querying {env['JIRA_URL']}", file=sys.stderr)
     password = os.environ.get("JIRA_PASSWORD", "")  # not stripped: spaces may be part of it
     secret_var = "JIRA_PASSWORD" if auth_type == "basic" and not env["JIRA_TOKEN"] and password else "JIRA_TOKEN"
     secret = password if secret_var == "JIRA_PASSWORD" else env["JIRA_TOKEN"]
@@ -633,24 +909,27 @@ def main():
     if not re.match(r"https?://", env["JIRA_URL"], re.I):
         fail(f"JIRA_URL must start with http:// or https://, got: {env['JIRA_URL']}")
 
-    client = Client(env["JIRA_URL"], env["JIRA_USER"], secret, auth_type, secret_var)
+    client = Client(env["JIRA_URL"], env["JIRA_USER"], secret, auth_type, secret_var, api)
     try:
-        issue = client.get_json(
-            f"/rest/api/2/issue/{urllib.parse.quote(key, safe='')}",
-            {"fields": "summary,status,assignee,description,comment,attachment"},
-        )
+        issue = client.get_issue(key)
     except JiraError as e:
         fail(f"{key}: {e}")
     issue["key"] = issue.get("key") or key
-    attachments = (issue.get("fields") or {}).get("attachment") or []
+    fields = issue.get("fields") or {}
+    attachments = fields.get("attachment") or []
+    cp = fields.get("comment") or {}
+    comments = cp.get("comments") or []
+    total = max(cp.get("total") or 0, len(comments))
 
     if args.json:
+        # The embedded comment list is only the first page; make --json complete.
+        if len(comments) < total:
+            try:
+                cp["comments"] = client.fetch_comments(issue["key"], 0, total)
+            except JiraError as e:
+                fail(f"failed to fetch comments: {e}")
         print(json.dumps(issue, indent=2, ensure_ascii=False))
     else:
-        cp = (issue.get("fields") or {}).get("comment") or {}
-        comments = cp.get("comments") or []
-        total = max(cp.get("total") or 0, len(comments))
-
         want = total if args.n == -1 else min(args.n, total)
         # The embedded comment list may be truncated to the oldest page; fetch the tail if so.
         if want > 0 and len(comments) < total:
@@ -660,8 +939,14 @@ def main():
                 fail(f"failed to fetch comments: {e}")
         comments = comments[-want:] if want > 0 else []
 
+        # Jira Cloud wiki text writes mentions as [~accountid:...]; turn them into names.
+        names = known_users(issue, comments)
+        unknown = find_account_ids([fields.get("description")] + [c.get("body") for c in comments]) - set(names)
+        if unknown:
+            names.update(client.lookup_users(unknown))
+
         color = not args.plain and not os.environ.get("NO_COLOR") and sys.stdout.isatty() and enable_ansi()
-        render(issue, comments, total, args.n, Palette(color))
+        render(issue, comments, total, args.n, Palette(color), names)
 
     if args.dir:
         sys.stdout.flush()

@@ -6,6 +6,7 @@
 
 [English](README.md) · 简体中文
 
+[![CI](https://github.com/wyp0596/jget/actions/workflows/ci.yml/badge.svg)](https://github.com/wyp0596/jget/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/wyp0596/jget?color=blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](jget.py)
@@ -26,14 +27,27 @@ $ jget PROJ-123 -n 2
 ================================================================================
 [PROJ-123] 修复登录页 JWT 校验报错
 ================================================================================
+Type:     Bug
 Status:   In Progress
+Priority: High
 Assignee: Alex Mercer
+Reporter: 张三
+Labels:   auth, web
+Created:  2026-03-19 10:02
+Updated:  2026-03-21 09:15
+Parent:   [PROJ-100] 登录安全加固 (In Progress)
+
+--------------------------------------------------------------------------------
+[ Linked issues (1) ]
+--------------------------------------------------------------------------------
+  is blocked by [PROJ-98] 升级 jwt 依赖 (Done)
 
 --------------------------------------------------------------------------------
 [ Description ]
 --------------------------------------------------------------------------------
 长时间未操作后重新提交，后端返回 500。
 需要检查 JWT 过期逻辑，并返回正确的 401。
+复现步骤 (https://wiki.example.com/jwt-500)
 
 [image: login-error.png]
 
@@ -47,7 +61,7 @@ Assignee: Alex Mercer
 [ Comments (latest 2 of 5) ]
 --------------------------------------------------------------------------------
 [1] 张三 (2026-03-20 14:30)
-已复现，前端需要配合做无感刷新 token。
+@Alex Mercer 已复现，前端需要配合做无感刷新 token。
 
 [2] 李四 (2026-03-21 09:15)
 PR 已提交，等待 CI。
@@ -59,9 +73,10 @@ PR 已提交，等待 CI。
 
 | 对比点 | jget | 常见完整 Jira CLI |
 |--------|------|-------------------|
-| 核心能力 | **读票**：描述 / 评论 / 附件 | 读 + 写 + 搜索 + 看板 |
+| 核心能力 | **读票**：描述 / 评论 / 附件 / 父任务 / 关联票 | 读 + 写 + 搜索 + 看板 |
 | 安装成本 | 一行 `curl \| sh`，零依赖 | 往往要装二进制、配多套命令 |
 | AI 集成 | **安装时自动写入 Cursor / Claude Code skill** | 通常只给人用，要自己教 Agent |
+| 可读性 | `@提及`、颜色、smart-link 等 wiki 噪音自动清理 | 多数原样输出 `[~accountid:…]`、`{color}` |
 | 截图 / 附件 | 占位符可读 + 一键下载，方便 Agent 看图 | 多数只给链接或原始 wiki 标记 |
 | 认证 | Cloud Token / Server PAT / 账号密码 | 多数认真做 Cloud，Server 体验参差 |
 | 体积 | 单文件 Python，标准库即可 | 功能多，心智负担也更重 |
@@ -74,12 +89,15 @@ PR 已提交，等待 CI。
 
 ## ✨ 功能亮点
 
-- 📝 **一张票一屏看完** — 标题、状态、经办人、描述、评论、附件
+- 📝 **一张票一屏看完** — 标题、类型、状态、优先级、经办人/报告人、标签、父任务、子任务、关联票、描述、评论、附件
 - 💬 **默认看最新讨论** — `-n` 控制条数，`-n -1` 看全部
-- 🖼️ **截图可读** — `!shot.png|width=300!` 显示为 `[image: shot.png]`
+- 🧹 **人和 AI 都读得懂** — `[~accountid:…]` 变成 `@姓名`，`{color}` 去掉，`[text|url|smart-link]` 变成 `text (url)`，`!shot.png|width=300!` 变成 `[image: shot.png]`
+- 🔗 **直接贴链接** — `jget https://your-domain.atlassian.net/browse/PROJ-123`，看板链接里的 `?selectedIssue=` 也认
 - 📎 **附件可下** — `-d <目录>` 一键下载截图、视频、文件
-- 🤖 **人和 AI 都能用** — 装完后直接对 Agent 说「看下 PROJ-123」
+- 🧰 **脚本友好** — `--json` 输出完整 JSON（含全部评论），管道时自动关颜色
 - 🔐 **Cloud / Server 都覆盖** — API Token、PAT、账号密码
+- 🛡️ **面向未来** — Cloud 下线 v2 接口时自动切到 v3，并把 Atlassian Document Format 渲染成可读文本
+- 🤖 **装完 Agent 就会用** — 直接对 Cursor / Claude 说「看下 PROJ-123」
 - 🪶 **零依赖** — 一个 `jget.py`，Python 3.8+ 标准库
 
 ## 🚀 三分钟上手
@@ -192,6 +210,7 @@ python3 jget.py install      # Windows: py jget.py install
 | `JIRA_USER` | Basic 认证时 | Cloud 邮箱，或 Server 用户名 |
 | `JIRA_PASSWORD` | — | 账号密码（仅 Server / DC；`JIRA_TOKEN` 为空时才用） |
 | `JIRA_AUTH` | — | `basic`（默认）或 `bearer` |
+| `JIRA_API` | — | REST API 版本，`2`（默认）或 `3`（仅 Cloud）。Cloud 对 v2 返回 `410 Gone` 时会自动切到 v3 |
 
 ### ☁️ Jira Cloud（默认）
 
@@ -232,23 +251,48 @@ export JIRA_PASSWORD='<password>'
 ## 💻 用法
 
 ```bash
-jget <ISSUE-KEY> [flags]
+jget <ISSUE-KEY|URL> [flags]
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `-n <int>` | 显示最新评论条数（默认 `5`，`-1` = 全部，`0` = 不显示） |
 | `-d <dir>` | 下载全部附件到指定目录 |
-| `--json` | 输出原始 JSON |
+| `--json` | 输出原始 JSON，评论是**完整**的（不只第一页） |
 | `--plain` | 关闭颜色（适合重定向或给 AI 读） |
+| `--version` | 显示版本 |
 
 ```bash
-jget PROJ-123                         # 最新 5 条评论
-jget PROJ-123 -n -1                   # 全部评论
-jget PROJ-123 -n 0 -d ./PROJ-123      # 下载截图等附件
+jget PROJ-123                                            # 最新 5 条评论
+jget https://your-domain.atlassian.net/browse/PROJ-123   # 直接贴链接也行
+jget PROJ-123 -n -1                                      # 全部评论
+jget PROJ-123 -n 0 -d ./PROJ-123                         # 下载截图等附件
 jget PROJ-123 --json | jq -r '.fields.status.name'
 jget PROJ-123 --plain > PROJ-123.txt
 ```
+
+传链接且没设 `JIRA_URL` 时，会直接从链接推出 Jira 地址（含 `https://company.com/jira` 这类带路径前缀的自建实例）。
+
+<details>
+<summary><b>输出时清理了什么</b></summary>
+
+<br>
+
+Jira wiki 标记（REST API v2）和 Atlassian Document Format（REST API v3）都会渲染成给人和 Agent 读的纯文本：
+
+| Jira 原文 | jget 输出 |
+|-----------|-----------|
+| `[~accountid:5b10ac8d…]` | `@Alex Mercer`（先用票里已有的用户信息，不够再查 `/user/bulk`） |
+| `[~jdoe]`（Server / DC） | `@jdoe` |
+| `{color:#4c9aff}文字{color}` | `文字` |
+| `[https://a.io/x\|https://a.io/x\|smart-link]` | `https://a.io/x` |
+| `[文档\|https://a.io/docs]` | `文档 (https://a.io/docs)` |
+| `!shot.png\|width=300!`、`[^report.xlsx]` | `[image: shot.png]`、`[file: report.xlsx]` |
+| ADF 列表 / 表格 / 代码块 / 提及 | wiki 风格的 `*`、`\|\|`、`{code}`、`@姓名` |
+
+需要原始内容时用 `--json`。
+
+</details>
 
 ## 🤖 配合 AI 使用
 
@@ -279,7 +323,18 @@ jget uninstall
 | `authentication blocked by CAPTCHA` | 浏览器登录 Jira 一次后再试 |
 | `issue not found or not visible to you (HTTP 404)` | 检查票号与权限 |
 | `request timed out after 10s` | 检查网络 / VPN 与 `JIRA_URL` |
+| `not an issue key or Jira issue URL` | 传 `PROJ-123`，或包含票号的链接，如 `…/browse/PROJ-123` |
 | `JIRA_AUTH must be one of` | 只能是 `basic` 或 `bearer` |
+| `request failed (HTTP 410)` | 该接口已被 Atlassian 下线。读票本身会自动切 v3；仍报错时设置 `JIRA_API=3` |
+
+## 🛠️ 开发
+
+```bash
+git clone https://github.com/wyp0596/jget.git && cd jget
+python3 -m unittest discover -s tests -v   # 测试同样零依赖
+```
+
+CI 在 Linux / macOS / Windows 上跑 Python 3.8 / 3.12 / 3.13。
 
 ## 📄 License
 

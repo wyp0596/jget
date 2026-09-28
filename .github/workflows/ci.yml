@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: py${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.8", "3.12", "3.13"]
+        exclude:
+          # Python 3.8 has no arm64 macOS build.
+          - os: macos-latest
+            python: "3.8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile
+        run: python -m compileall -q jget.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          python jget.py --version
+          python jget.py --help >/dev/null
+          # Missing credentials must fail fast with a helpful message, not a traceback.
+          if python jget.py PROJ-1 2>err.txt; then echo "expected failure"; exit 1; fi
+          grep -q "missing environment variable" err.txt
+      - name: Install / uninstall round trip
+        shell: bash
+        run: |
+          python jget.py install --bin-dir "$RUNNER_TEMP/jget-bin" --cursor
+          test -f "$HOME/.cursor/skills/jget/SKILL.md"
+          python jget.py uninstall --bin-dir "$RUNNER_TEMP/jget-bin" --cursor
+          test ! -e "$HOME/.cursor/skills/jget/SKILL.md"
