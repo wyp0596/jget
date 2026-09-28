@@ -451,6 +451,86 @@ def in_path(directory):
     return norm(directory) in {norm(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p}
 
 
+def shell_rc_hint():
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    return {"zsh": "~/.zshrc", "bash": "~/.bashrc", "fish": "~/.config/fish/config.fish"}.get(
+        shell, "your shell startup file (e.g. ~/.zshrc)"
+    )
+
+
+def env_configured():
+    """Return (ok, missing_names) for a usable Jira config in the current process."""
+    url = os.environ.get("JIRA_URL", "").strip()
+    user = os.environ.get("JIRA_USER", "").strip()
+    token = os.environ.get("JIRA_TOKEN", "").strip()
+    password = os.environ.get("JIRA_PASSWORD", "")
+    auth = (os.environ.get("JIRA_AUTH", "").strip().lower() or "basic")
+    missing = []
+    if not url:
+        missing.append("JIRA_URL")
+    if auth == "bearer":
+        if not token:
+            missing.append("JIRA_TOKEN")
+    else:
+        if not user:
+            missing.append("JIRA_USER")
+        if not token and not password:
+            missing.append("JIRA_TOKEN")
+    return not missing, missing
+
+
+def print_setup_guide():
+    """Guide the user to configure credentials after install."""
+    print()
+    ok, missing = env_configured()
+    if ok:
+        print("Jira credentials look set in this shell.")
+        print("Try:  jget PROJ-123")
+        print("(If Cursor / Claude was already open, restart it so it picks up the env.)")
+        return
+
+    print("Next: configure Jira credentials (still missing: " + ", ".join(missing) + ")")
+    print()
+    if IS_WINDOWS:
+        print("1) Get a token")
+        print("   Jira Cloud:  https://id.atlassian.com/manage-profile/security/api-tokens")
+        print("                Create API token → copy it (shown once)")
+        print("   Jira Server: avatar → Profile → Personal Access Tokens")
+        print()
+        print("2) Save them for new terminals (PowerShell):")
+        print('     setx JIRA_URL "https://your-domain.atlassian.net"')
+        print('     setx JIRA_USER "you@example.com"')
+        print('     setx JIRA_TOKEN "<paste-token-here>"')
+        print("   Server/DC PAT instead:")
+        print('     setx JIRA_URL "https://jira.company.com"')
+        print('     setx JIRA_AUTH "bearer"')
+        print('     setx JIRA_TOKEN "<paste-pat-here>"')
+        print()
+        print("3) Close this terminal and open a new one, then run:  jget PROJ-123")
+    else:
+        rc = shell_rc_hint()
+        print("1) Get a token")
+        print("   Jira Cloud:  https://id.atlassian.com/manage-profile/security/api-tokens")
+        print("                Create API token → copy it (shown once)")
+        print("   Jira Server: avatar → Profile → Personal Access Tokens")
+        print()
+        print(f"2) Add these lines to {rc}:")
+        print("     export JIRA_URL=https://your-domain.atlassian.net")
+        print("     export JIRA_USER=you@example.com")
+        print("     export JIRA_TOKEN='<paste-token-here>'")
+        print("   Server/DC PAT instead:")
+        print("     export JIRA_URL=https://jira.company.com")
+        print("     export JIRA_AUTH=bearer")
+        print("     export JIRA_TOKEN='<paste-pat-here>'")
+        print()
+        print(f"3) Reload the shell:  source {rc}")
+        print("   then try:           jget PROJ-123")
+        print("   (Restart Cursor / Claude too, so the agent sees the same env.)")
+    print()
+    print("Docs: https://github.com/wyp0596/jget#where-to-get-an-api-token")
+    print("      https://github.com/wyp0596/jget/blob/main/README.zh-CN.md#api-token-去哪里申请")
+
+
 def install(argv):
     args = parse_manage_args("install", argv)
     src = os.path.realpath(__file__)
@@ -473,6 +553,7 @@ def install(argv):
         shutil.copyfile(skill_src, dest)
         print(f"  + {dest} ({label})")
     print("jget installed.")
+    print_setup_guide()
 
 
 def is_jget_file(path):

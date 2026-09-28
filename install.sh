@@ -44,17 +44,4 @@ fetch "${BASE_URL}/SKILL.md" "$tmp/SKILL.md" || err "failed to download ${BASE_U
 grep -q "jget: fetch and display a Jira ticket" "$tmp/jget.py" || err "downloaded file does not look like jget"
 
 "$PYTHON" "$tmp/jget.py" install "$@"
-
-cat <<'EOF'
-
-Next, set your Jira credentials (e.g. in ~/.zshrc or ~/.bashrc):
-
-  export JIRA_URL=https://your-domain.atlassian.net
-  export JIRA_USER=you@example.com
-  export JIRA_TOKEN=<api-token>
-
-For Jira Server / Data Center Personal Access Tokens, also set JIRA_AUTH=bearer
-(JIRA_USER is then not needed).
-
-Then try:  jget PROJ-123
-EOF
+# Credential setup steps are printed by `jget install` above.

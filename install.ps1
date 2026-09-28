@@ -38,20 +38,7 @@ try {
     $InstallArgs = if ($env:JGET_INSTALL_ARGS) { $env:JGET_INSTALL_ARGS -split '\s+' } else { @() }
     & $Python (Join-Path $Tmp 'jget.py') install @InstallArgs
     if ($LASTEXITCODE -ne 0) { throw "jget install failed with exit code $LASTEXITCODE" }
+    # Credential setup steps are printed by `jget install` above.
 } finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
-
-Write-Host @'
-
-Next, set your Jira credentials (then open a new terminal):
-
-  setx JIRA_URL "https://your-domain.atlassian.net"
-  setx JIRA_USER "you@example.com"
-  setx JIRA_TOKEN "<api-token>"
-
-For Jira Server / Data Center Personal Access Tokens, also run
-setx JIRA_AUTH "bearer" (JIRA_USER is then not needed).
-
-Then try:  jget PROJ-123
-'@
