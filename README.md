@@ -4,6 +4,8 @@
 
 **Read any Jira ticket from your terminal — and let your AI coding agent read it too.**
 
+English · [简体中文](README.zh-CN.md)
+
 [![License](https://img.shields.io/github/license/wyp0596/jget?color=blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](jget.py)
