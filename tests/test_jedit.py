@@ -134,8 +134,10 @@ class PureTest(unittest.TestCase):
 
 class MainTest(unittest.TestCase):
     def run_main(self, argv, routes, env=None, stdin=""):
+        # Override only our variables: clearing os.environ drops SYSTEMROOT, and Python 3.13 on
+        # Windows then fails to create the SSL context that urllib builds in Client().
         base_env = {"JIRA_URL": "https://x.atlassian.net", "JIRA_USER": "u", "JIRA_TOKEN": "t",
-                    "JIRA_AUTH": "", "JIRA_API": "", "JIRA_PASSWORD": ""}
+                    "JIRA_AUTH": "", "JIRA_API": "", "JIRA_PASSWORD": "", "NO_COLOR": ""}
         base_env.update(env or {})
         calls = []
 
@@ -161,7 +163,7 @@ class MainTest(unittest.TestCase):
             return 200, respond(method, path, params, body)
 
         buf, err = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, base_env, clear=True), \
+        with mock.patch.dict(os.environ, base_env), \
                 mock.patch.object(jget.Client, "get_json", fake_get_json), \
                 mock.patch.object(jget.Client, "request", fake_request), \
                 mock.patch.object(sys, "argv", ["jedit"] + argv), \

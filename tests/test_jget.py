@@ -422,7 +422,10 @@ class MainTest(unittest.TestCase):
     """End-to-end through main() with the HTTP layer mocked."""
 
     def run_main(self, argv, routes, env=None):
-        base_env = {"JIRA_URL": "https://x.atlassian.net", "JIRA_USER": "u", "JIRA_TOKEN": "t"}
+        # Override only our variables: clearing os.environ drops SYSTEMROOT, and Python 3.13 on
+        # Windows then fails to create the SSL context that urllib builds in Client().
+        base_env = {"JIRA_URL": "https://x.atlassian.net", "JIRA_USER": "u", "JIRA_TOKEN": "t",
+                    "JIRA_AUTH": "", "JIRA_API": "", "JIRA_PASSWORD": "", "NO_COLOR": ""}
         base_env.update(env or {})
         calls = []
 
@@ -434,7 +437,7 @@ class MainTest(unittest.TestCase):
             return resp(params) if callable(resp) else json.loads(json.dumps(resp))
 
         buf, err = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, base_env, clear=True), \
+        with mock.patch.dict(os.environ, base_env), \
                 mock.patch.object(jget.Client, "get_json", fake_get_json), \
                 mock.patch.object(sys, "argv", ["jget"] + argv), \
                 redirect_stdout(buf), mock.patch("sys.stderr", err):
