@@ -48,8 +48,12 @@ class JiraError(Exception):
         self.code = code
 
 
+# Prefix for messages; jedit reuses this module and sets it to "jedit".
+PROG = "jget"
+
+
 def fail(msg):
-    print(f"jget: {msg}", file=sys.stderr)
+    print(f"{PROG}: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -154,19 +158,33 @@ class Client:
     def _timeout_error(self):
         return JiraError(f"request timed out after {TIMEOUT}s, check your network or JIRA_URL: {self.base_url}")
 
-    def open(self, url, accept=None):
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    def open(self, url, accept=None, method=None, data=None, content_type=None):
+        headers = {"User-Agent": USER_AGENT}
         if accept:
-            req.add_header("Accept", accept)
+            headers["Accept"] = accept
+        if content_type:
+            headers["Content-Type"] = content_type
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         req.add_unredirected_header("Authorization", self.auth)
         try:
             return self.opener.open(req, timeout=TIMEOUT)
         except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
+            try:
+                body = e.read()
+            except (OSError, http.client.HTTPException):
+                body = b""
+            if e.code == 401:
                 raise self._auth_error(e)
+            if e.code == 403:
+                # Bad credentials and CAPTCHA come back bare; a missing permission comes with Jira's reason.
+                msgs = jira_messages(body)
+                captcha = "CAPTCHA" in (e.headers.get("X-Authentication-Denied-Reason") or "").upper()
+                if captcha or not msgs:
+                    raise self._auth_error(e)
+                raise JiraError(f"permission denied (HTTP 403): {msgs}", 403)
             if e.code == 404:
                 raise JiraError("issue not found or not visible to you (HTTP 404)", 404)
-            raise JiraError(f"request failed (HTTP {e.code}): {jira_error_message(e.read())}", e.code)
+            raise JiraError(f"request failed (HTTP {e.code}): {jira_error_message(body)}", e.code)
         except urllib.error.URLError as e:
             if isinstance(e.reason, (socket.timeout, TimeoutError)):
                 raise self._timeout_error()
@@ -192,6 +210,30 @@ class Client:
         raw = self.get(path, params)
         try:
             return json.loads(raw)
+        except ValueError as e:
+            raise JiraError(f"invalid JSON response: {e}")
+
+    def request(self, method, path, params=None, body=None):
+        """JSON request. Returns (status_code, parsed_json_or_None). None body sends no payload."""
+        url = self.base_url + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        data = content_type = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            content_type = "application/json"
+        with self.open(url, accept="application/json", method=method, data=data, content_type=content_type) as resp:
+            try:
+                raw = resp.read()
+                code = resp.getcode()
+            except (socket.timeout, TimeoutError):
+                raise self._timeout_error()
+            except (OSError, http.client.HTTPException) as e:
+                raise JiraError(f"network error while reading response: {e!r}")
+        if not raw or not raw.strip():
+            return code, None
+        try:
+            return code, json.loads(raw)
         except ValueError as e:
             raise JiraError(f"invalid JSON response: {e}")
 
@@ -282,15 +324,21 @@ def safe_filename(name, fallback):
     return name
 
 
-def jira_error_message(body):
+def jira_messages(body):
+    """Jira's errorMessages / errors joined into one line, or "" when the body has none."""
     try:
         data = json.loads(body)
         msgs = list(data.get("errorMessages") or [])
         msgs += [f"{k}: {v}" for k, v in (data.get("errors") or {}).items()]
-        if msgs:
-            return "; ".join(msgs)
-    except (ValueError, AttributeError):
-        pass
+        return "; ".join(str(m) for m in msgs)
+    except (ValueError, AttributeError, TypeError):
+        return ""
+
+
+def jira_error_message(body):
+    msgs = jira_messages(body)
+    if msgs:
+        return msgs
     s = body.decode("utf-8", "replace").strip()
     return s[:200] + "..." if len(s) > 200 else s
 
@@ -602,7 +650,9 @@ def parse_args(argv):
             "  JIRA_PASSWORD  account password (Server/DC), used when JIRA_TOKEN is not set\n"
             "  JIRA_AUTH      basic (default, Jira Cloud) or bearer (Server/DC Personal Access Token)\n"
             "  JIRA_API       REST API version, 2 (default) or 3 (Cloud only; used automatically\n"
-            "                 when v2 is retired)"
+            "                 when v2 is retired)\n"
+            "\n"
+            "to comment, change status, or change assignee, use jedit"
         ),
     )
     parser.add_argument("key", metavar="ISSUE-KEY|URL",
@@ -629,14 +679,14 @@ SCRIPT_MARKER = "jget: fetch and display a Jira ticket"
 SKILL_NAME = "jget"
 
 
-def ai_tools():
+def ai_tools(skill_name=SKILL_NAME):
     """Map of supported AI tools to (label, config dir, skill dir)."""
     home = os.path.expanduser("~")
     claude_home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")
     cursor_home = os.path.join(home, ".cursor")
     return {
-        "claude": ("Claude Code", claude_home, os.path.join(claude_home, "skills", SKILL_NAME)),
-        "cursor": ("Cursor", cursor_home, os.path.join(cursor_home, "skills", SKILL_NAME)),
+        "claude": ("Claude Code", claude_home, os.path.join(claude_home, "skills", skill_name)),
+        "cursor": ("Cursor", cursor_home, os.path.join(cursor_home, "skills", skill_name)),
     }
 
 
@@ -673,11 +723,11 @@ def write_file(path, content, mode=0o644):
     os.chmod(path, mode)
 
 
-def install_executable(src, bin_dir):
-    """Copy the script into bin_dir as a `jget` command. Returns the installed paths."""
+def install_executable(src, bin_dir, command="jget", marker=SCRIPT_MARKER):
+    """Copy the script into bin_dir as a command. Returns the installed paths."""
     os.makedirs(bin_dir, exist_ok=True)
     if not IS_WINDOWS:
-        dest = os.path.join(bin_dir, "jget")
+        dest = os.path.join(bin_dir, command)
         if os.path.exists(dest) and os.path.samefile(src, dest):
             return [dest]
         if os.path.islink(dest):
@@ -686,18 +736,18 @@ def install_executable(src, bin_dir):
         os.chmod(dest, 0o755)
         return [dest]
 
-    # Windows can't run extensionless scripts: keep jget.py and add launchers for
-    # cmd/PowerShell (jget.cmd) and Git Bash (jget).
-    py_dest = os.path.join(bin_dir, "jget.py")
+    # Windows can't run extensionless scripts: keep command.py and add launchers for
+    # cmd/PowerShell (command.cmd) and Git Bash (command).
+    py_dest = os.path.join(bin_dir, command + ".py")
     if not (os.path.exists(py_dest) and os.path.samefile(src, py_dest)):
         shutil.copyfile(src, py_dest)
     python = sys.executable
-    write_file(os.path.join(bin_dir, "jget.cmd"),
-               f'@rem {SCRIPT_MARKER} (launcher)\n@"{python}" "%~dp0jget.py" %* & exit /b\n')
-    write_file(os.path.join(bin_dir, "jget"),
-               f'#!/bin/sh\n# {SCRIPT_MARKER} (launcher)\n'
-               f'exec "{python.replace(os.sep, "/")}" "$(dirname "$0")/jget.py" "$@"\n', 0o755)
-    return [py_dest, os.path.join(bin_dir, "jget.cmd"), os.path.join(bin_dir, "jget")]
+    write_file(os.path.join(bin_dir, command + ".cmd"),
+               f'@rem {marker} (launcher)\n@"{python}" "%~dp0{command}.py" %* & exit /b\n')
+    write_file(os.path.join(bin_dir, command),
+               f'#!/bin/sh\n# {marker} (launcher)\n'
+               f'exec "{python.replace(os.sep, "/")}" "$(dirname "$0")/{command}.py" "$@"\n', 0o755)
+    return [py_dest, os.path.join(bin_dir, command + ".cmd"), os.path.join(bin_dir, command)]
 
 
 def path_hint(bin_dir):
@@ -834,7 +884,10 @@ def is_jget_file(path):
 
 def uninstall(argv):
     args = parse_manage_args("uninstall", argv)
-    if not args.skill_only:
+    jedit_installed = any(os.path.lexists(os.path.join(args.bin_dir, n)) for n in ("jedit", "jedit.py"))
+    if not args.skill_only and jedit_installed:
+        print(f"  ! kept jget in {args.bin_dir}: jedit runs on it; run `jedit uninstall` first")
+    elif not args.skill_only:
         found = False
         for name in ("jget", "jget.py", "jget.cmd"):
             path = os.path.join(args.bin_dir, name)
@@ -865,17 +918,11 @@ def uninstall(argv):
 # main
 # ---------------------------------------------------------------------------
 
-def main():
-    setup_stdio()
-    argv = sys.argv[1:]
-    if argv and argv[0] in ("install", "uninstall"):
-        (install if argv[0] == "install" else uninstall)(argv[1:])
-        return
-
-    args = parse_args(argv)
-    key, url_base = parse_issue_arg(args.key)
+def make_client(issue_arg):
+    """Validate an issue key or URL plus the JIRA_* env. Return (key, Client)."""
+    key, url_base = parse_issue_arg(issue_arg)
     if not key:
-        fail(f"not an issue key or Jira issue URL: {args.key}")
+        fail(f"not an issue key or Jira issue URL: {issue_arg}")
 
     auth_type = os.environ.get("JIRA_AUTH", "").strip().lower() or "basic"
     if auth_type not in AUTH_TYPES:
@@ -888,7 +935,7 @@ def main():
         if not env["JIRA_URL"]:
             env["JIRA_URL"] = url_base
         elif urllib.parse.urlsplit(url_base).netloc.lower() != urllib.parse.urlsplit(env["JIRA_URL"]).netloc.lower():
-            print(f"jget: warning: URL host differs from JIRA_URL, querying {env['JIRA_URL']}", file=sys.stderr)
+            print(f"{PROG}: warning: URL host differs from JIRA_URL, querying {env['JIRA_URL']}", file=sys.stderr)
     password = os.environ.get("JIRA_PASSWORD", "")  # not stripped: spaces may be part of it
     secret_var = "JIRA_PASSWORD" if auth_type == "basic" and not env["JIRA_TOKEN"] and password else "JIRA_TOKEN"
     secret = password if secret_var == "JIRA_PASSWORD" else env["JIRA_TOKEN"]
@@ -909,7 +956,18 @@ def main():
     if not re.match(r"https?://", env["JIRA_URL"], re.I):
         fail(f"JIRA_URL must start with http:// or https://, got: {env['JIRA_URL']}")
 
-    client = Client(env["JIRA_URL"], env["JIRA_USER"], secret, auth_type, secret_var, api)
+    return key, Client(env["JIRA_URL"], env["JIRA_USER"], secret, auth_type, secret_var, api)
+
+
+def main():
+    setup_stdio()
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("install", "uninstall"):
+        (install if argv[0] == "install" else uninstall)(argv[1:])
+        return
+
+    args = parse_args(argv)
+    key, client = make_client(args.key)
     try:
         issue = client.get_issue(key)
     except JiraError as e:

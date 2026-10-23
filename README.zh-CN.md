@@ -69,11 +69,11 @@ PR 已提交，等待 CI。
 
 ## 🎯 为什么选 jget
 
-市面上已有完整的 Jira CLI（建票、转状态、看板 TUI、批量管理）。`jget` **刻意不做这些**，只把「接到票号 → 看懂上下文」做到极致：
+市面上已有完整的 Jira CLI（建票、搜索、看板 TUI、批量管理）。`jget` 只把「接到票号 → 看懂上下文」做到极致。要写评论、改状态、改经办人，用同一套配置的 `jedit`。建票、搜索、看板仍然不做：
 
 | 对比点 | jget | 常见完整 Jira CLI |
 |--------|------|-------------------|
-| 核心能力 | **读票**：描述 / 评论 / 附件 / 父任务 / 关联票 | 读 + 写 + 搜索 + 看板 |
+| 核心能力 | **读票**（jget）；评论 / 状态 / 经办人（jedit） | 读 + 写 + 搜索 + 看板 |
 | 安装成本 | 一行 `curl \| sh`，零依赖 | 往往要装二进制、配多套命令 |
 | AI 集成 | **安装时自动写入 Cursor / Claude Code skill** | 通常只给人用，要自己教 Agent |
 | 可读性 | `@提及`、颜色、smart-link 等 wiki 噪音自动清理 | 多数原样输出 `[~accountid:…]`、`{color}` |
@@ -98,6 +98,7 @@ PR 已提交，等待 CI。
 - 🔐 **Cloud / Server 都覆盖** — API Token、PAT、账号密码
 - 🛡️ **面向未来** — Cloud 下线 v2 接口时自动切到 v3，并把 Atlassian Document Format 渲染成可读文本
 - 🤖 **装完 Agent 就会用** — 直接对 Cursor / Claude 说「看下 PROJ-123」
+- ✏️ **`jedit`** — 同一套凭据下加评论、改状态、改经办人
 - 🪶 **零依赖** — 一个 `jget.py`，Python 3.8+ 标准库
 
 ## 🚀 三分钟上手
@@ -294,6 +295,42 @@ Jira wiki 标记（REST API v2）和 Atlassian Document Format（REST API v3）�
 
 </details>
 
+## ✏️ jedit
+
+`jedit` 是 `jget` 的写操作：加一条评论、改状态、或改经办人。环境变量与 `jget` 相同，不建票、不搜索、不做看板。
+
+```bash
+python3 jedit.py install     # 会顺带装上同版本的 jget；curl | sh 会两个一起装
+
+jedit PROJ-123 -c "下个版本带上。"
+jedit PROJ-123 --status "In Progress"
+jedit PROJ-123 --status Done --resolution Done
+jedit PROJ-123 -a "Alex Mercer"          # 显示名、邮箱、用户名或 accountId
+jedit PROJ-123 -a me                     # 当前登录用户
+jedit PROJ-123 -a none                   # 取消经办人
+jedit PROJ-123 -a me -c "我来跟。" --status "In Progress"
+jedit PROJ-123 --transitions             # 只列出能走的状态，不修改
+jedit PROJ-123 --status Done --dry-run   # 先解析会走到哪，不写入
+```
+
+| 参数 | 说明 |
+|------|------|
+| `-c`, `--comment TEXT` | 评论内容。`-` 从 stdin 读 |
+| `--status NAME` | 流转名、目标状态名，或 transition id（不区分大小写） |
+| `--resolution NAME` | 流转要求决议时再传（如 `Done`、`Won't Do`） |
+| `-a`, `--assignee USER` | 显示名、邮箱、用户名、accountId，或 `me` / `none` |
+| `--transitions` | 列出当前状态能走的流转，然后退出 |
+| `--dry-run` | 先解析用户和流转，只打印计划 |
+| `--plain` | 关闭颜色 |
+
+状态必须是当前工作流允许的流转。如果有多条流转都能到同一个状态（例如两条都能到 Done），`jedit` 会把它们列出来并且**什么都不改**，这时改传 transition id。经办人必须精确匹配（完整显示名、邮箱、用户名或 accountId）；名字不完整或匹配到多人时不会改派，只列出候选人。
+
+修改按「状态 → 经办人 → 评论」的顺序执行，每步一个请求。后面某步失败时，报错会写明哪些已经生效。
+
+评论格式跟随所用的 REST API：默认 `JIRA_API=2` 时按 Jira wiki 发送，`*粗体*` 和 `[~accountid:…]` / `[~username]` 提及都有效；`JIRA_API=3`（或自动回退到 v3）时按纯文本段落发送，标记会原样显示。
+
+`jedit uninstall` 不会删 `jget`；只要 `jedit` 还装在同一目录，`jget uninstall` 也会保留 jget 可执行文件。
+
 ## 🤖 配合 AI 使用
 
 安装后，**Claude Code** 和 **Cursor** 会自动学会调用 `jget`。你可以直接说：
@@ -322,6 +359,7 @@ jget uninstall
 | `authentication failed (HTTP 401/403)` | 检查账号与 Token；Server PAT 请设 `JIRA_AUTH=bearer` |
 | `authentication blocked by CAPTCHA` | 浏览器登录 Jira 一次后再试 |
 | `issue not found or not visible to you (HTTP 404)` | 检查票号与权限 |
+| `permission denied (HTTP 403)` | 凭据没问题，但账号缺少对应的 Jira 权限（例如 Assign Issues） |
 | `request timed out after 10s` | 检查网络 / VPN 与 `JIRA_URL` |
 | `not an issue key or Jira issue URL` | 传 `PROJ-123`，或包含票号的链接，如 `…/browse/PROJ-123` |
 | `JIRA_AUTH must be one of` | 只能是 `basic` 或 `bearer` |

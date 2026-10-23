@@ -216,6 +216,77 @@ class FakeClient(jget.Client):
         return resp(params) if callable(resp) else resp
 
 
+class ClientRequestTest(unittest.TestCase):
+    def _client(self, status, body):
+        c = jget.Client("https://x.atlassian.net", "u", "t")
+        captured = {}
+
+        class Resp:
+            def read(self):
+                return body
+
+            def getcode(self):
+                return status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_open(req, timeout=None):
+            captured["method"] = req.get_method()
+            captured["url"] = req.full_url
+            captured["data"] = req.data
+            captured["type"] = req.get_header("Content-type")
+            captured["auth"] = req.get_header("Authorization")
+            return Resp()
+
+        c.opener.open = fake_open
+        return c, captured
+
+    def test_post_json_and_empty_response(self):
+        c, captured = self._client(201, b'{"id":"9"}')
+        code, data = c.request("POST", "/rest/api/2/issue/P-1/comment", body={"body": "\u4f60\u597d"})
+        self.assertEqual((code, data), (201, {"id": "9"}))
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["url"], "https://x.atlassian.net/rest/api/2/issue/P-1/comment")
+        self.assertIn("Basic ", captured["auth"])
+        self.assertEqual(captured["type"], "application/json")
+        self.assertEqual(json.loads(captured["data"].decode("utf-8")), {"body": "\u4f60\u597d"})
+
+        c, _ = self._client(204, b"")
+        self.assertEqual(c.request("PUT", "/rest/api/2/issue/P-1/assignee", body={"accountId": None}), (204, None))
+
+    def _http_error(self, code, body, headers=None):
+        import email.message
+        import urllib.error
+        msg = email.message.Message()
+        for k, v in (headers or {}).items():
+            msg[k] = v
+        return urllib.error.HTTPError("https://x/", code, "err", msg, io.BytesIO(body))
+
+    def test_403_with_reason_is_permission_not_auth(self):
+        c = jget.Client("https://x.atlassian.net", "u", "t")
+        c.opener.open = mock.Mock(side_effect=self._http_error(
+            403, b'{"errorMessages":["You do not have permission to assign issues."]}'))
+        with self.assertRaises(jget.JiraError) as cm:
+            c.request("PUT", "/rest/api/2/issue/P-1/assignee", body={"accountId": "a"})
+        self.assertEqual(str(cm.exception), "permission denied (HTTP 403): You do not have permission to assign issues.")
+        self.assertEqual(cm.exception.code, 403)
+
+        c.opener.open = mock.Mock(side_effect=self._http_error(403, b"<html>Forbidden</html>"))
+        with self.assertRaises(jget.JiraError) as cm:
+            c.get("/rest/api/2/issue/P-1")
+        self.assertIn("authentication failed (HTTP 403)", str(cm.exception))
+
+        c.opener.open = mock.Mock(side_effect=self._http_error(
+            403, b'{"errorMessages":["x"]}', {"X-Authentication-Denied-Reason": "CAPTCHA_CHALLENGE"}))
+        with self.assertRaises(jget.JiraError) as cm:
+            c.get("/rest/api/2/issue/P-1")
+        self.assertIn("CAPTCHA", str(cm.exception))
+
+
 class ClientTest(unittest.TestCase):
     def test_v2_then_v3_fallback_on_410(self):
         c = FakeClient({

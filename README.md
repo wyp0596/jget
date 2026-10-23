@@ -77,6 +77,7 @@ PR is up, waiting for CI.
 - 🔐 **Every Jira flavor** — Jira Cloud API tokens, Server / Data Center Personal Access Tokens, or username + password
 - 🛡️ **Future-proof** — falls back to REST API v3 and renders Atlassian Document Format when Cloud retires a v2 endpoint
 - 🤖 **AI agent skill** — one command teaches Claude Code and Cursor to read your tickets
+- ✏️ **`jedit`** — add a comment, change status, or change the assignee with the same credentials
 - 🪶 **Zero dependencies** — a single Python file using only the standard library
 
 ## 🚀 Quick start
@@ -274,6 +275,42 @@ Use `--json` when you need the untouched original.
 
 </details>
 
+## ✏️ jedit
+
+`jedit` is the write side of `jget`: a comment, a status change, or a new assignee. It uses the same `JIRA_*` variables and does not create tickets, search, or drive a board.
+
+```bash
+python3 jedit.py install     # also installs the matching jget; curl | sh installs both
+
+jedit PROJ-123 -c "Shipped in the next build."
+jedit PROJ-123 --status "In Progress"
+jedit PROJ-123 --status Done --resolution Done
+jedit PROJ-123 -a "Alex Mercer"          # display name, email, username, or accountId
+jedit PROJ-123 -a me                     # authenticated user
+jedit PROJ-123 -a none                   # unassign
+jedit PROJ-123 -a me -c "Taking this." --status "In Progress"
+jedit PROJ-123 --transitions             # list transitions, change nothing
+jedit PROJ-123 --status Done --dry-run   # resolve the transition, write nothing
+```
+
+| Flag | Description |
+|------|-------------|
+| `-c`, `--comment TEXT` | Comment text. `-` reads stdin |
+| `--status NAME` | Transition name, target status name, or transition id (case-insensitive) |
+| `--resolution NAME` | Resolution when the transition requires one (`Done`, `Won't Do`, …) |
+| `-a`, `--assignee USER` | Display name, email, username, accountId, `me`, or `none` |
+| `--transitions` | List transitions from the current status and exit |
+| `--dry-run` | Resolve the user and transition, then print the plan |
+| `--plain` | Disable ANSI colors |
+
+Status has to be a transition the workflow allows from the current state. If several transitions match (two ways to reach Done, for example), `jedit` prints them and writes nothing — pass the transition id. The assignee must match exactly (full display name, email, username or accountId). A partial or ambiguous name is never assigned: `jedit` lists the candidates and changes nothing.
+
+Changes run in order — status, assignee, comment — one request each. If a later step fails, the error says which changes were already applied.
+
+The comment body follows the REST API in use. With the default `JIRA_API=2` it is Jira wiki markup, so `*bold*` and `[~accountid:…]` / `[~username]` mentions work. With `JIRA_API=3` (or after an automatic v3 fallback) it is sent as plain text paragraphs, and markup shows up literally.
+
+`jedit uninstall` leaves `jget` in place; `jget uninstall` keeps the executable while `jedit` is installed next to it.
+
 ## 🤖 Use with AI agents
 
 After installing, **Claude Code** and **Cursor** know how to use `jget`. Just mention a ticket key or paste a Jira link:
@@ -303,6 +340,7 @@ Removes the executable and the skill from Claude Code and Cursor. Accepts the sa
 | `authentication failed (HTTP 401/403)` | Check your credentials; the token may have expired. For Server / Data Center PATs, set `JIRA_AUTH=bearer` |
 | `authentication blocked by CAPTCHA` | Log in to Jira once in the browser, then retry |
 | `issue not found or not visible to you (HTTP 404)` | Check the issue key and your permissions |
+| `permission denied (HTTP 403)` | Credentials work, but your Jira account lacks that permission (for example Assign Issues) |
 | `request timed out after 10s` | Check your network / VPN and `JIRA_URL` |
 | `not an issue key or Jira issue URL` | Pass `PROJ-123` or a link containing the key, e.g. `…/browse/PROJ-123` |
 | `JIRA_AUTH must be one of` | Use `basic` or `bearer` |

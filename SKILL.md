@@ -14,6 +14,8 @@ Always use `--plain`. A pasted Jira URL works as-is (quote it). Output includes 
 priority, people, labels, parent, subtasks and linked issues; run `jget <KEY>` on a parent or
 linked key when you need that context. Mentions are already resolved to `@Name`.
 
+To add a comment, change status, or change assignee, use `jedit` (the jedit skill).
+
 ## Setup (only if env missing)
 
 Do not invent credentials. Ask Cloud vs Server, then have the user set vars and **restart the IDE** so the agent inherits them.

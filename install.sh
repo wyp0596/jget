@@ -41,7 +41,12 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 echo "Downloading jget from ${BASE_URL} ..."
 fetch "${BASE_URL}/jget.py" "$tmp/jget.py" || err "failed to download ${BASE_URL}/jget.py"
 fetch "${BASE_URL}/SKILL.md" "$tmp/SKILL.md" || err "failed to download ${BASE_URL}/SKILL.md"
+fetch "${BASE_URL}/jedit.py" "$tmp/jedit.py" || err "failed to download ${BASE_URL}/jedit.py"
+mkdir -p "$tmp/jedit"
+fetch "${BASE_URL}/jedit/SKILL.md" "$tmp/jedit/SKILL.md" || err "failed to download ${BASE_URL}/jedit/SKILL.md"
 grep -q "jget: fetch and display a Jira ticket" "$tmp/jget.py" || err "downloaded file does not look like jget"
+grep -q "jedit: comment on a Jira ticket" "$tmp/jedit.py" || err "downloaded file does not look like jedit"
 
 "$PYTHON" "$tmp/jget.py" install "$@"
+"$PYTHON" "$tmp/jedit.py" install "$@"
 # Credential setup steps are printed by `jget install` above.

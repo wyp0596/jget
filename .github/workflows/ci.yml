@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Compile
-        run: python -m compileall -q jget.py
+        run: python -m compileall -q jget.py jedit.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: CLI smoke test
@@ -32,8 +32,12 @@ jobs:
         run: |
           python jget.py --version
           python jget.py --help >/dev/null
+          python jedit.py --version
+          python jedit.py --help >/dev/null
           # Missing credentials must fail fast with a helpful message, not a traceback.
           if python jget.py PROJ-1 2>err.txt; then echo "expected failure"; exit 1; fi
+          grep -q "missing environment variable" err.txt
+          if python jedit.py PROJ-1 -c hi 2>err.txt; then echo "expected failure"; exit 1; fi
           grep -q "missing environment variable" err.txt
       - name: Install / uninstall round trip
         shell: bash
@@ -42,3 +46,7 @@ jobs:
           test -f "$HOME/.cursor/skills/jget/SKILL.md"
           python jget.py uninstall --bin-dir "$RUNNER_TEMP/jget-bin" --cursor
           test ! -e "$HOME/.cursor/skills/jget/SKILL.md"
+          python jedit.py install --bin-dir "$RUNNER_TEMP/jedit-bin" --cursor
+          test -f "$HOME/.cursor/skills/jedit/SKILL.md"
+          python jedit.py uninstall --bin-dir "$RUNNER_TEMP/jedit-bin" --cursor
+          test ! -e "$HOME/.cursor/skills/jedit/SKILL.md"

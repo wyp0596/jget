@@ -34,10 +34,15 @@ try {
     Write-Host "Downloading jget from $BaseUrl ..."
     Invoke-WebRequest -UseBasicParsing "$BaseUrl/jget.py" -OutFile (Join-Path $Tmp 'jget.py')
     Invoke-WebRequest -UseBasicParsing "$BaseUrl/SKILL.md" -OutFile (Join-Path $Tmp 'SKILL.md')
+    Invoke-WebRequest -UseBasicParsing "$BaseUrl/jedit.py" -OutFile (Join-Path $Tmp 'jedit.py')
+    New-Item -ItemType Directory -Path (Join-Path $Tmp 'jedit') | Out-Null
+    Invoke-WebRequest -UseBasicParsing "$BaseUrl/jedit/SKILL.md" -OutFile (Join-Path $Tmp 'jedit/SKILL.md')
 
     $InstallArgs = if ($env:JGET_INSTALL_ARGS) { $env:JGET_INSTALL_ARGS -split '\s+' } else { @() }
     & $Python (Join-Path $Tmp 'jget.py') install @InstallArgs
     if ($LASTEXITCODE -ne 0) { throw "jget install failed with exit code $LASTEXITCODE" }
+    & $Python (Join-Path $Tmp 'jedit.py') install @InstallArgs
+    if ($LASTEXITCODE -ne 0) { throw "jedit install failed with exit code $LASTEXITCODE" }
     # Credential setup steps are printed by `jget install` above.
 } finally {
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
